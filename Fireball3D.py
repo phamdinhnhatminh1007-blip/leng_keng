@@ -1,42 +1,31 @@
 """
-Fireball Hand Magic — xoe tay de tha qua cau lua 3D
-====================================================
-Ghep 3 mang:
-  1. Webcam    -> lam background 3D
-  2. MediaPipe -> lay toa do ban tay
-  3. Ursina    -> spawn fireball 3D (shader lua + khoi + vet lua) khi xoe tay
+Fireball3D.py — MODULE HIEU UNG CAU LUA (file phu)
+===================================================
+Chi chua nhung gi lien quan den hieu ung: shader, texture, particle,
+class Fireball. KHONG chua webcam / MediaPipe / ML / vong lap game
+— nhung thu do nam o main.py.
 
-Cai dat:
-    pip install ursina mediapipe opencv-python pillow numpy
+Cach dung (xem main.py):
+    from Fireball3D import bloom_shader, init_effects, Fireball
 
-Chay:
-    python Fireball3D.py
-
-Dieu khien (BAN LIEN TUC):
-    - Xoe ca 5 ngon tay          -> ban cau lua lien tuc ve phia man hinh
-    - Nam tay / thu tay          -> ngung ban
-    - Phim 'b'                   -> bat/tat bloom de so sanh
-    - Phim ESC / dong cua so     -> thoat
+    app = Ursina()
+    camera.shader = bloom_shader          # bat glow
+    init_effects()                        # tao texture (goi SAU Ursina())
+    ...
+    Fireball(position, velocity, power)   # ban 1 qua cau lua
 """
 
 import math
 import random
-import time
-import os
 
-import cv2
 import numpy as np
-import mediapipe as mp
-from mediapipe.tasks import python as mp_python
-from mediapipe.tasks.python import vision as mp_vision
 from PIL import Image
 from ursina import (
-    Ursina, Entity, camera, window, color, destroy, time as utime, Vec3, Vec2,
-    application, Shader, Texture,
+    Entity, color, destroy, time as utime, Vec3, Vec2, Shader, Texture,
 )
 
 # ----------------------------------------------------------------------
-# BLOOM SHADER (screen-space, tu viet vi Ursina khong co san)
+# BLOOM SHADER (screen-space post-processing, gan vao camera.shader)
 # ----------------------------------------------------------------------
 bloom_shader = Shader(fragment='''
 #version 430
@@ -71,16 +60,15 @@ void main() {
 }
 ''',
 default_input=dict(
-    threshold=0.72,
+    threshold=0.90,
     intensity=1.7,
     blur_size=0.013,
 ))
 
 
 # ----------------------------------------------------------------------
-# FIRE SHADER (procedural - buoc 5): sinh lua bang noise + time,
-# mau tuoi sang (tu do -> cam -> vang -> trang), canh wispy nhu khoi.
-# Dua tren cau truc unlit_shader cua Ursina (#130 vertex / #140 fragment).
+# FIRE SHADER (procedural): sinh lua bang noise + time.
+# heat: 0..1 (cao = nong/trang), softness: 0..1 (cao = canh tan nhu khoi)
 # ----------------------------------------------------------------------
 fire_shader = Shader(name='fire_shader', language=Shader.GLSL,
 vertex='''
@@ -103,9 +91,9 @@ uniform vec4 p3d_ColorScale;
 in vec2 texcoords;
 out vec4 fragColor;
 
-uniform float time;       // thoi gian -> lua chuyen dong
-uniform float heat;       // 0..1: cao = nong/sang/trang, thap = do
-uniform float softness;   // 0..1: cao = canh tan ra thanh khoi
+uniform float time;
+uniform float heat;
+uniform float softness;
 
 float hash(vec2 p) {
     p = fract(p * vec2(123.34, 345.45));
@@ -127,11 +115,11 @@ float fbm(vec2 p) {
     return v;
 }
 vec3 firePalette(float t) {
-    vec3 c1 = vec3(0.6, 0.0, 0.0);    // do tham
-    vec3 c2 = vec3(1.0, 0.25, 0.0);   // cam do
-    vec3 c3 = vec3(1.0, 0.6, 0.05);   // cam
-    vec3 c4 = vec3(1.0, 0.9, 0.35);   // vang
-    vec3 c5 = vec3(1.0, 1.0, 0.92);   // trang nong
+    vec3 c1 = vec3(0.6, 0.0, 0.0);
+    vec3 c2 = vec3(1.0, 0.25, 0.0);
+    vec3 c3 = vec3(1.0, 0.6, 0.05);
+    vec3 c4 = vec3(1.0, 0.9, 0.35);
+    vec3 c5 = vec3(1.0, 1.0, 0.92);
     t = clamp(t, 0.0, 1.0);
     if (t < 0.25) return mix(c1, c2, t / 0.25);
     if (t < 0.5)  return mix(c2, c3, (t - 0.25) / 0.25);
@@ -145,10 +133,10 @@ void main() {
     float f = n1 * 0.6 + n2 * 0.4;
 
     float t = clamp(f * 0.75 + heat * 0.55, 0.0, 1.0);
-    vec3 col = firePalette(t) * (1.35 + heat * 0.7);   // > 1 de bloom bat sang
+    vec3 col = firePalette(t) * (1.35 + heat * 0.7);
 
     float a = p3d_ColorScale.a;
-    a *= mix(1.0, smoothstep(0.12, 0.65, f), softness); // canh tan thanh khoi
+    a *= mix(1.0, smoothstep(0.12, 0.65, f), softness);
     fragColor = vec4(col, a);
 }
 ''',
@@ -162,60 +150,13 @@ default_input=dict(
 
 
 # ----------------------------------------------------------------------
-# 1. WEBCAM + MEDIAPIPE
+# TEXTURE NOISE (dung cho khoi + vet lua)
 # ----------------------------------------------------------------------
-CAM_W, CAM_H = 1280, 720
-
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_W)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
-
-MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "hand_landmarker.task")
-if not os.path.exists(MODEL_PATH):
-    raise FileNotFoundError(
-        f"Khong tim thay model: {MODEL_PATH}\n"
-        "Copy file hand_landmarker.task vao cung thu muc voi file nay."
-    )
-
-_options = mp_vision.HandLandmarkerOptions(
-    base_options=mp_python.BaseOptions(model_asset_path=MODEL_PATH),
-    running_mode=mp_vision.RunningMode.VIDEO,
-    num_hands=1,
-    min_hand_detection_confidence=0.7,
-    min_tracking_confidence=0.6,
-)
-detector = mp_vision.HandLandmarker.create_from_options(_options)
-_t0 = time.time()
-
-
-def fingers_up(lm):
-    """lm = list 21 landmark. Tra ve [thumb, index, middle, ring, pinky]."""
-    f = [1 if lm[4].x < lm[3].x else 0]
-    for tip in (8, 12, 16, 20):
-        f.append(1 if lm[tip].y < lm[tip - 2].y else 0)
-    return f
-
-
-# ----------------------------------------------------------------------
-# 2. URSINA SCENE
-# ----------------------------------------------------------------------
-app = Ursina()
-window.title = "Fireball Hand Magic"
-window.color = color.black
-
-camera.shader = bloom_shader
-# Meo HDR: webcam bi giam sang xuong duoi threshold (BG_BRIGHTNESS < threshold)
-# -> nen KHONG bao gio bi bloom/nhoe; chi lua (sang 1.0) moi glow.
-camera.set_shader_input("threshold", 0.90)
-camera.set_shader_input("intensity", 1.7)
-camera.set_shader_input("blur_size", 0.013)
-
-BG_BRIGHTNESS = 0.85     # do sang webcam (phai < threshold de nen khong glow)
+fire_tex = None      # duoc tao boi init_effects() sau khi Ursina() khoi dong
 
 
 def make_fire_texture(size=256):
-    """Noise dam may TILEABLE (bang FFT low-pass) - dung cho khoi va tan lua."""
+    """Noise dam may TILEABLE (FFT low-pass)."""
     rng = np.random.default_rng(7)
     white = rng.random((size, size))
     f = np.fft.fft2(white)
@@ -233,31 +174,15 @@ def make_fire_texture(size=256):
     return Texture(Image.fromarray(rgb))
 
 
-fire_tex = make_fire_texture()
-
-# --- Background quad: dan webcam len ---
-aspect = CAM_W / CAM_H
-BG_Z = 50
-fov_rad = math.radians(camera.fov)
-bg_h = 2 * BG_Z * math.tan(fov_rad / 2)
-bg_w = bg_h * aspect
-background = Entity(parent=camera, model="quad", scale=(bg_w, bg_h),
-                   z=BG_Z, double_sided=True)
-
-# Mat phang spawn fireball
-SPAWN_Z = 16
-spawn_h = 2 * SPAWN_Z * math.tan(fov_rad / 2)
-spawn_w = spawn_h * aspect
-
-
-def hand_to_world(hx, hy):
-    x = (hx - 0.5) * spawn_w
-    y = (0.5 - hy) * spawn_h
-    return Vec3(x, y, SPAWN_Z)
+def init_effects():
+    """Goi 1 lan SAU app = Ursina() de tao texture dung chung."""
+    global fire_tex
+    if fire_tex is None:
+        fire_tex = make_fire_texture()
 
 
 # ----------------------------------------------------------------------
-# 3. PARTICLE: TAN LUA, KHOI, VET LUA
+# PARTICLES: TAN LUA, KHOI, VET LUA
 # ----------------------------------------------------------------------
 class Ember(Entity):
     """Tan lua (spark) bay ra tu qua cau."""
@@ -336,9 +261,11 @@ class TrailPuff(Entity):
 
 
 # ----------------------------------------------------------------------
-# 4. FIREBALL (dung fire_shader nhieu lop)
+# FIREBALL
 # ----------------------------------------------------------------------
 class Fireball(Entity):
+    """Qua cau lua nhieu lop dung fire_shader, tu nha khoi/tan lua/vet lua."""
+
     # (scale, heat, softness, alpha) cho tung lop
     BASE = [
         (1.1, 1.00, 0.00, 1.00),   # loi trang nong
@@ -352,7 +279,7 @@ class Fireball(Entity):
         self.velocity = velocity
         self.life = 3.6
         self.timer = 0.0
-        self.size = 0.7 + power * 0.9          # to theo luong nap
+        self.size = 0.7 + power * 0.9          # to theo power
 
         self.layers = []
         self.base_scales = []
@@ -394,90 +321,3 @@ class Fireball(Entity):
 
         if self.z < 0.8 or self.life <= 0:
             destroy(self)
-
-
-# ----------------------------------------------------------------------
-# 5. VONG LAP CHINH — BAN LIEN TUC
-# ----------------------------------------------------------------------
-_last_fire_time = 0.0
-# Thoi gian hoi chieu giua 2 qua. Giam de ban nhanh hon, tang de cham lai.
-FIRE_COOLDOWN = 0.15
-
-
-def update():
-    global _last_fire_time
-
-    ok, frame = cap.read()
-    if not ok:
-        return
-    frame = cv2.flip(frame, 1)
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-    # Giam sang nen truoc khi hien thi de nen nam duoi nguong bloom
-    # (MediaPipe van dung 'rgb' goc de nhan dien chinh xac)
-    bg_rgb = (rgb.astype(np.uint16) * int(BG_BRIGHTNESS * 256) >> 8).astype(np.uint8)
-    background.texture = None
-    tex = _np_to_texture(bg_rgb)
-    if tex:
-        background.texture = tex
-
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-    ts_ms = int((time.time() - _t0) * 1000)
-    res = detector.detect_for_video(mp_image, ts_ms)
-
-    if not res.hand_landmarks:
-        return
-
-    lm = res.hand_landmarks[0]
-    f = fingers_up(lm)
-    palm_open = sum(f) == 5
-
-    # Xoe tay + het cooldown -> ban
-    if palm_open and (time.time() - _last_fire_time > FIRE_COOLDOWN):
-        pos = hand_to_world(lm[9].x, lm[9].y)
-        # jitter nhe de cac qua khong trung diem xuat phat
-        pos += Vec3(random.uniform(-0.5, 0.5), random.uniform(-0.5, 0.5), 0)
-
-        dx = lm[12].x - lm[0].x
-        dy = lm[0].y - lm[12].y
-        n = math.hypot(dx, dy) or 1
-        aim = Vec3(dx / n * 2.5, dy / n * 2.5, -10)
-
-        Fireball(pos, aim, power=random.uniform(0.5, 0.8))
-        _last_fire_time = time.time()
-
-
-def _np_to_texture(rgb):
-    try:
-        img = Image.fromarray(rgb)
-        return Texture(img)
-    except Exception as e:
-        print("Texture error:", e)
-        return None
-
-
-def input(key):
-    if key == "escape":
-        application.quit()
-    elif key == "b":
-        camera.shader = None if camera.shader else bloom_shader
-
-
-if __name__ == "__main__":
-    print("Xoe tay de nap nang luong, nam tay lai de ban. ESC de thoat.")
-    try:
-        app.run()
-    finally:
-        try:
-            cap.release()
-        except Exception:
-            pass
-        try:
-            cv2.destroyAllWindows()
-        except Exception:
-            pass
-        try:
-            detector.close()
-        except Exception:
-            pass
-        os._exit(0)
