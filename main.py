@@ -1,5 +1,5 @@
-# gesture_run.py - Nhan dien gesture realtime
-# Cach dung: python gesture_run.py (sau khi da train xong gesture_model.joblib)
+# main.py - Nhan dien gesture realtime
+# Cach dung: python main.py (sau khi da train xong gesture_model.joblib)
 import os
 import time
 from collections import deque, Counter
