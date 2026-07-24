@@ -120,6 +120,100 @@ class Afterglow(Entity):
 
 
 # ----------------------------------------------------------------------
+# VET NUT MAT DAT — vien toi + loi dien sang lan tu diem set danh
+# ----------------------------------------------------------------------
+class GroundCracks(Entity):
+    """Mang vet nut toa nhanh, luu lai sau khi tia set chinh bien mat."""
+
+    def __init__(self, center, rays=9):
+        super().__init__()
+        self.age = 0.0
+        self.life = 1.9
+        self.parts = []
+        center = Vec3(*center) + Vec3(0, 0, -0.10)
+
+        for ray in range(rays):
+            angle = 2 * math.pi * ray / rays + random.uniform(-0.22, 0.22)
+            current = center
+            path = []
+            for step_index in range(random.randint(3, 5)):
+                angle += random.uniform(-0.28, 0.28)
+                step = random.uniform(0.65, 1.35) * (1.0 - step_index * 0.08)
+                end = current + Vec3(
+                    math.cos(angle) * step,
+                    math.sin(angle) * step * 0.72,
+                    random.uniform(-0.04, 0.04),
+                )
+                delay = ray * 0.004 + step_index * 0.028
+                self._add_segment(
+                    current,
+                    end,
+                    delay,
+                    thickness=max(0.045, 0.13 - step_index * 0.018),
+                )
+                path.append((current, end, delay))
+                current = end
+
+            # Moi tia chinh co them mot nhanh nho cheo ra ngoai.
+            if len(path) >= 2:
+                origin = path[random.randint(1, len(path) - 1)][0]
+                branch_angle = angle + random.choice((-1, 1)) * random.uniform(0.55, 0.95)
+                for branch_index in range(random.randint(1, 2)):
+                    end = origin + Vec3(
+                        math.cos(branch_angle) * random.uniform(0.45, 0.9),
+                        math.sin(branch_angle) * random.uniform(0.35, 0.7),
+                        random.uniform(-0.03, 0.03),
+                    )
+                    self._add_segment(
+                        origin,
+                        end,
+                        0.07 + branch_index * 0.035,
+                        thickness=0.055,
+                    )
+                    origin = end
+                    branch_angle += random.uniform(-0.3, 0.3)
+
+    def _add_segment(self, start, end, delay, thickness):
+        mid = _lerp3(start, end, 0.5)
+        length = (end - start).length()
+        outer = Entity(
+            parent=self,
+            model="cube",
+            position=mid,
+            color=color.rgba32(9, 13, 18, 235),
+            unlit=True,
+            enabled=False,
+        )
+        outer.look_at(end)
+        outer.scale = Vec3(thickness * 2.8, thickness * 2.8, length)
+
+        core = Entity(
+            parent=self,
+            model="cube",
+            position=mid + Vec3(0, 0, -0.012),
+            color=color.rgba32(105, 225, 255, 225),
+            unlit=True,
+            enabled=False,
+        )
+        core.look_at(end)
+        core.scale = Vec3(thickness, thickness, length * 0.98)
+        self.parts.append((outer, core, delay))
+
+    def update(self):
+        self.age += utime.dt
+        fade = max(0.0, min(1.0, (self.life - self.age) / 0.75))
+        for outer, core, delay in self.parts:
+            visible = self.age >= delay
+            outer.enabled = visible
+            core.enabled = visible
+            if visible:
+                outer.alpha = 0.92 * fade
+                core.alpha = fade * random.uniform(0.55, 1.0)
+        if self.age >= self.life:
+            destroy(self)
+
+
+# ----------------------------------------------------------------------
 # TIA SET — duong zigzag gap khuc, chop giat, co phan nhanh
 # ----------------------------------------------------------------------
 class LightningBolt(Entity):
@@ -182,11 +276,11 @@ class LightningBolt(Entity):
             self.parts.append(glow)
 
             # thi thoang phan nhanh (khong de quy sau qua)
-            if self.branch and self.depth < 2 and random.random() < 0.25:
-                be = b + Vec3(random.uniform(-2.5, 2.5),
-                              random.uniform(-2.5, 2.5),
+            if self.branch and self.depth < 2 and random.random() < 0.36:
+                be = b + Vec3(random.uniform(-3.2, 3.2),
+                              random.uniform(-3.2, 3.2),
                               random.uniform(-1, 1))
-                child = LightningBolt(b, be, segments=4, offset=0.9,
+                child = LightningBolt(b, be, segments=3, offset=1.0,
                                       thickness=self.thickness * 0.7,
                                       life=self.life, branch=False,
                                       depth=self.depth + 1)
@@ -222,7 +316,7 @@ class LightningBolt(Entity):
 # ----------------------------------------------------------------------
 # HAM TUNG CHIEU — goi tu main.py
 # ----------------------------------------------------------------------
-def cast_lightning(target, height=22.0, bolts=2):
+def cast_lightning(target, height=22.0, bolts=4):
     """Set giang tu TREN TROI xuong, danh xuong diem 'target' (mat dat).
 
     - target : Vec3 (diem set danh - lay tu vi tri ngon tay)
@@ -237,26 +331,30 @@ def cast_lightning(target, height=22.0, bolts=2):
     for i in range(bolts):
         top = ground + Vec3(random.uniform(-1.5, 1.5), height,
                             random.uniform(-1.5, 1.5))
-        LightningBolt(top, ground, segments=random.randint(10, 14),
+        LightningBolt(top, ground, segments=random.randint(13, 17),
                       offset=random.uniform(1.4, 2.2),
-                      thickness=random.uniform(0.10, 0.15),
-                      life=random.uniform(0.28, 0.45))
+                      thickness=random.uniform(0.09, 0.14),
+                      life=random.uniform(0.32, 0.48))
 
     # 2) Flash sang bung len tai diem danh (mat dat)
     Flash(ground, size=3.5)
 
     # 3) Vai tia set ngan toe ngang tren mat dat (nhu set lan)
-    for _ in range(4):
-        out = ground + Vec3(random.uniform(-4, 4),
-                            random.uniform(0, 1.5),
-                            random.uniform(-2, 2))
-        LightningBolt(ground, out, segments=5, offset=0.8,
-                      thickness=0.08, life=random.uniform(0.18, 0.3),
+    for _ in range(8):
+        out = ground + Vec3(random.uniform(-5.5, 5.5),
+                            random.uniform(-0.8, 2.0),
+                            random.uniform(-2.5, 2.5))
+        LightningBolt(ground, out, segments=6, offset=0.9,
+                      thickness=0.07, life=random.uniform(0.20, 0.34),
                       branch=False)
 
-    # 4) Tia lua dien bat ra tu diem danh
-    for _ in range(22):
+    # 4) Vet nut mat dat tiep tuc sang sau khi tia set tat
+    GroundCracks(ground, rays=9)
+
+    # 5) Tia lua dien bat ra tu diem danh
+    for _ in range(36):
         Spark(ground)
+    camera.shake(duration=0.24, magnitude=0.72, speed=0.016)
 
 
 # ----------------------------------------------------------------------

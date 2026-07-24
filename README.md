@@ -2,7 +2,7 @@
 
 Điều khiển **phép thuật tứ đại nguyên tố** (lấy cảm hứng từ *Avatar*) bằng
 **cử chỉ tay** trước webcam, theo thời gian thực. Giơ đúng thế tay là tung
-"chiêu" tương ứng với hiệu ứng 3D — cầu lửa, sét giáng từ trời, khiên đá,
+"chiêu" tương ứng với hiệu ứng 3D — phun lửa, sét giáng từ trời, khiên đá,
 lốc xoáy, tường băng — ngay trên hình ảnh camera của bạn.
 
 Dự án ghép 3 mảng: **thị giác máy tính** (MediaPipe lấy điểm mốc bàn tay),
@@ -13,11 +13,11 @@ dựng hiệu ứng, shader, particle, bloom). Hỗ trợ **cả hai tay** cùng
 
 | Cử chỉ | Nguyên tố | Hiệu ứng |
 |--------|-----------|----------|
-| ✋ Xòe bàn tay | Hỏa 🔥 | Bắn cầu lửa liên tục về phía màn hình, nổ tia lửa khi va chạm |
+| ✋ Xòe bàn tay | Hỏa 🔥 | Phun luồng lửa nhọn, nóng và hỗn loạn về phía màn hình |
 | ✊ Nắm đấm | Thổ 🪨 | Dựng **khiên đá** sần sùi, giữ mãi khi còn nắm đấm, sụp đổ khi thả |
 | ☝️ Ngón trỏ | Sét ⚡ | **Sét giáng từ trời** xuống đất, để lại vệt sáng dư âm |
 | 👍 Ngón cái | Khí 🌪️ | **Lốc xoáy** bao quanh tay, giữ mãi khi còn giơ, tan khi thả |
-| 🤙 Ngón trỏ + út | Thủy 🧊 | **Tường băng** đâm từ đất chui lên, rung màn hình + sương lạnh |
+| 🤟 Thế Spider-Man | Thủy 🧊 | **Tường băng nhọn** đâm lên rồi bị kéo chìm xuống đất |
 
 Điều khiển khác: phím `b` bật/tắt hiệu ứng glow (bloom) · `Esc` để thoát.
 
@@ -66,11 +66,11 @@ hiệu ứng riêng**, ghép lại qua một bảng `SKILLS` duy nhất.
 | File | Vai trò |
 |------|---------|
 | `main.py` | **File chính.** Webcam, MediaPipe, ML nhận diện chiêu, dựng scene 3D, và **điều phối** chiêu → hiệu ứng qua bảng `SKILLS`. |
-| `Fireball3D.py` | Hiệu ứng **Hỏa** — shader lửa, khói, vệt lửa, cầu lửa. Cũng chứa `bloom_shader` dùng chung. |
+| `Fireball3D.py` | Hiệu ứng **Hỏa** — luồng phun lửa, khói, tàn lửa và shader glow. Cũng chứa `bloom_shader` dùng chung. |
 | `earth.py` | Hiệu ứng **Thổ** — khiên đá (dựng lên, giữ, sụp đổ), texture đá, bụi. |
 | `lightning.py` | Hiệu ứng **Sét** — tia sét zigzag chớp giật, vệt sáng dư âm. |
 | `air.py` | Hiệu ứng **Khí** — lốc xoáy hình phễu quanh tay, tiếng gió loop. |
-| `ice.py` | Hiệu ứng **Thủy** — tường cột băng đâm lên, sương lạnh, mảnh vỡ. |
+| `ice.py` | Hiệu ứng **Thủy** — cụm tinh thể sắc mọc hỗn loạn theo nhiều lớp chiều sâu. |
 | `gesture_utils.py` | Dùng chung: danh sách `GESTURES` và `normalize_landmarks` (chuẩn hóa 21 điểm → vector 42 chiều). |
 | `collect_data.py` | Thu dữ liệu cử chỉ, ghi vào `gestures.csv`. |
 | `train_model.py` | Train `MLPClassifier` từ `gestures.csv` → `gesture_model.joblib`. |
@@ -85,11 +85,11 @@ Toàn bộ ánh xạ cử chỉ → hiệu ứng gói gọn ở một chỗ:
 
 ```python
 SKILLS = {
-    0: Fireball3D.cast,    # Xòe bàn tay  -> cầu lửa (Hỏa)
+    0: Fireball3D.cast,    # Xòe bàn tay  -> luồng phun lửa (Hỏa)
     1: earth.cast,         # Nắm đấm       -> khiên đá (Thổ)
     3: lightning.cast,     # Ngón trỏ      -> sét (Sét)
     4: air.cast,           # Ngón cái      -> lốc xoáy (Khí)
-    5: ice.cast,           # Ngón trỏ + út -> tường băng (Thủy)
+    5: ice.cast,           # Spider-Man -> tường băng (Thủy)
     # 2: Ngón giữa         -> chưa gán
 }
 ```
@@ -163,14 +163,15 @@ thành `.wav` sẽ không phát được (Panda3D báo "not a valid RIFF file").
 | `CONF_THRESHOLD` (0.8) | `main.py` | Dưới ngưỡng này coi như không rõ chiêu. |
 | `SMOOTH_FRAMES` (7) | `main.py` | Số frame để bình chọn (làm mượt, chống nhấp nháy). |
 | `BG_BRIGHTNESS` (0.85) | `main.py` | Độ sáng webcam (phải < ngưỡng bloom để nền không bị glow). |
-| `FIRE_COOLDOWN` | `Fireball3D.py` | Nhịp bắn cầu lửa. |
+| `FlameStream.EMIT_INTERVAL` | `Fireball3D.py` | Mật độ lưỡi lửa trong luồng phun. |
 | `timeout` | `earth.py` / `air.py` | Bỏ tay bao lâu thì khiên/lốc tan (chiêu duy trì). |
 | `count` / `spacing` | `ice.py` | Số cột băng và độ rộng tường băng. |
 | `threshold / intensity / blur_size` | `main.py` | Thông số bloom (glow). |
 
 ## Ghi chú kỹ thuật
 
-- Webcam mở bằng backend **DirectShow** (`cv2.CAP_DSHOW`) cho nhanh trên Windows.
+- Webcam mở bất đồng bộ bằng **DirectShow** (`cv2.CAP_DSHOW`) trong lúc model và
+  scene đang tải; frame nền 540p và frame nhận diện 512p để giảm thời gian chờ.
 - Thoát bằng `os._exit(0)` để tránh lỗi destructor của MediaPipe trên Python 3.13.
 - `gestures.csv` và `gesture_model.joblib` là file sinh ra; có thể không commit
   `.joblib` (người khác clone về tự `train_model.py`).

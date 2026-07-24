@@ -7,10 +7,11 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import classification_report
 import joblib
 
-from gesture_utils import GESTURES
+from gesture_utils import GESTURES, save_fast_mlp
 
 CSV_PATH = "gestures.csv"
 MODEL_OUT = "gesture_model.joblib"
+FAST_MODEL_OUT = "gesture_model_fast.npz"
 
 
 def main():
@@ -37,6 +38,8 @@ def main():
 
     joblib.dump(model, MODEL_OUT)
     print("Da luu model:", MODEL_OUT)
+    save_fast_mlp(model, FAST_MODEL_OUT)
+    print("Da luu model nhanh:", FAST_MODEL_OUT)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ Chi lo phan "khung": webcam, nhan dien tay, ML doan chieu, dung scene 3D,
 va DIEU PHOI chieu -> hieu ung. Toan bo hieu ung + logic tung chieu nam o
 cac module rieng:
 
-    Fireball3D.py  -> chieu "Xoe ban tay" (cau lua)
+    Fireball3D.py  -> chieu "Xoe ban tay" (phun lua)
     lightning.py   -> chieu "Nam dam"    (set)
 
 Muon them chieu moi: viet module hieu ung co ham cast(lm, hand_to_world),
@@ -14,22 +14,29 @@ roi them 1 dong vao bang SKILLS ben duoi. Khong can sua gi khac.
 Chay: python main.py   (phim 'b' bat/tat bloom, ESC de thoat)
 """
 
+import atexit
 import os
 import time
 import math
+import threading
 from collections import deque, Counter
 
 import cv2
 import numpy as np
-import joblib
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
-from PIL import Image
+from panda3d.core import Texture as PandaTexture
 from pathlib import Path
-from ursina import Ursina, Entity, camera, window, color, application, Texture, Vec3, Text, destroy
+from ursina import (
+    Ursina, Entity, Texture as UrsinaTexture, camera, window, color,
+    application, Vec3, Text, destroy,
+)
 
-from gesture_utils import GESTURES, normalize_landmarks
+from gesture_utils import (
+    FastMLP, GESTURES, is_lightning_pose, is_spiderman_pose,
+    normalize_landmarks,
+)
 import Fireball3D
 import lightning
 import earth
@@ -37,7 +44,8 @@ import air
 import ice
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CAM_W, CAM_H = 1280, 720
+CAM_W, CAM_H = 960, 540
+DETECT_W, DETECT_H = 512, 288
 
 # Ursina tim texture/am thanh trong asset_folder -> tro ve thu muc du an
 # (de sounds/*.wav luon tim thay du chay tu cwd nao).
@@ -47,11 +55,108 @@ application.asset_folder = Path(BASE_DIR)
 # ======================================================================
 # 1. WEBCAM + MEDIAPIPE (lay 21 landmarks ban tay)
 # ======================================================================
-# CAP_DSHOW (DirectShow) mo cam nhanh hon nhieu tren Windows so voi MSMF mac dinh
-cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_W)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
-cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)        # bot do tre khung hinh
+detector = None
+_camera_reader = None
+_cleanup_done = False
+_t0 = time.monotonic()
+
+
+class _LatestFrameReader:
+    """Mo + doc cam o thread rieng, song song voi luc model/scene dang tai."""
+
+    def __init__(self):
+        self.capture = None
+        self.frame = None
+        self.frame_id = 0
+        self.error = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._read_loop,
+            name="webcam-reader",
+            daemon=True,
+        )
+
+    def start(self):
+        self._thread.start()
+
+    def _read_loop(self):
+        # DirectShow mo nhanh tren Windows; neu khong hop camera thi lui ve mac dinh.
+        capture = (
+            cv2.VideoCapture(0, cv2.CAP_DSHOW)
+            if os.name == "nt"
+            else cv2.VideoCapture(0)
+        )
+        if not capture.isOpened() and os.name == "nt":
+            capture.release()
+            capture = cv2.VideoCapture(0)
+        if not capture.isOpened():
+            self.error = "Khong mo duoc webcam. Hay dong app dang dung camera."
+            capture.release()
+            return
+
+        self.capture = capture
+        if os.name == "nt":
+            capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_W)
+        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
+        capture.set(cv2.CAP_PROP_FPS, 30)
+        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        if self._stop.is_set():
+            capture.release()
+            return
+
+        while not self._stop.is_set():
+            ok, frame = capture.read()
+            if ok:
+                with self._lock:
+                    self.frame = frame
+                    self.frame_id += 1
+            elif not self._stop.is_set():
+                time.sleep(0.01)
+
+    def latest(self):
+        with self._lock:
+            return self.frame_id, self.frame
+
+    def stop(self):
+        self._stop.set()
+        self._thread.join(timeout=0.5)
+        if self.capture is not None:
+            self.capture.release()
+        if self._thread.is_alive():
+            self._thread.join(timeout=0.5)
+
+
+# Bat dau MO camera ngay; model va scene 3D khoi tao song song voi frame dau.
+_camera_reader = _LatestFrameReader()
+_camera_reader.start()
+
+
+def _cleanup_resources():
+    """Dong webcam va MediaPipe dung mot lan, ke ca khi khoi tao app bi loi."""
+    global _cleanup_done
+    if _cleanup_done:
+        return
+    _cleanup_done = True
+    if detector is not None:
+        try:
+            detector.close()
+        except Exception as exc:
+            print("Loi khi dong MediaPipe:", exc)
+    try:
+        if _camera_reader is not None:
+            _camera_reader.stop()
+    except Exception:
+        pass
+    try:
+        cv2.destroyAllWindows()
+    except Exception:
+        pass
+
+
+atexit.register(_cleanup_resources)
 
 _hand_model = os.path.join(BASE_DIR, "hand_landmarker.task")
 if not os.path.exists(_hand_model):
@@ -62,20 +167,29 @@ detector = mp_vision.HandLandmarker.create_from_options(
         base_options=mp_python.BaseOptions(model_asset_path=_hand_model),
         running_mode=mp_vision.RunningMode.VIDEO,
         num_hands=2,          # nhan dien ca 2 tay
-        min_hand_detection_confidence=0.7,
-        min_tracking_confidence=0.6,
+        min_hand_detection_confidence=0.62,
+        min_tracking_confidence=0.5,
     )
 )
-_t0 = time.time()
 
 
 # ======================================================================
 # 2. ML MODEL — doan chieu tu landmarks (co lam muot qua nhieu frame)
 # ======================================================================
-clf = joblib.load(os.path.join(BASE_DIR, "gesture_model.joblib"))
+_fast_model = os.path.join(BASE_DIR, "gesture_model_fast.npz")
+if os.path.exists(_fast_model):
+    # Ban NumPy nay cho ket qua giong model sklearn, nhung khoi dong nhanh hon.
+    clf = FastMLP.load(_fast_model)
+else:
+    import joblib
+    clf = joblib.load(os.path.join(BASE_DIR, "gesture_model.joblib"))
 CONF_THRESHOLD = 0.8       # duoi nguong nay coi nhu khong ro chieu
+LIGHTNING_CONF_THRESHOLD = 0.64
 SMOOTH_FRAMES = 7          # so frame de binh chon (chong nhap nhay)
+LIGHTNING_GESTURE = 3
+ICE_GESTURE = 5
 _histories = {}            # lich su vote RIENG cho tung tay: {hand_id: deque}
+_lightning_streaks = {}     # gate nhanh: chi can 2 frame hinh hoc lien tiep
 
 
 def current_gesture(lm, hand_id):
@@ -91,9 +205,35 @@ def current_gesture(lm, hand_id):
     label = int(clf.classes_[ci])
     conf = float(probs[vi, ci])
 
+    exact_ice_pose = is_spiderman_pose(lm)
+    exact_lightning_pose = is_lightning_pose(lm)
+    threshold = (
+        LIGHTNING_CONF_THRESHOLD
+        if label == LIGHTNING_GESTURE
+        else CONF_THRESHOLD
+    )
+    candidate = label if conf >= threshold else -1
+    # Model cu hoc the tro + ut. The Spider-Man moi duoc gate hinh hoc nhan
+    # truc tiep, nen khong can thu data/train lai chi vi them ngon cai.
+    if exact_ice_pose:
+        candidate = ICE_GESTURE
+    elif candidate == ICE_GESTURE:
+        candidate = -1
+    if exact_lightning_pose:
+        candidate = LIGHTNING_GESTURE
+
     hist = _histories.setdefault(hand_id, deque(maxlen=SMOOTH_FRAMES))
-    hist.append(label if conf >= CONF_THRESHOLD else -1)
+    hist.append(candidate)
+
+    streak = _lightning_streaks.get(hand_id, 0)
+    streak = min(3, streak + 1) if exact_lightning_pose else max(0, streak - 1)
+    _lightning_streaks[hand_id] = streak
+    if streak >= 2:
+        return LIGHTNING_GESTURE
+
     vote, n = Counter(hist).most_common(1)[0]
+    if vote == ICE_GESTURE and not exact_ice_pose:
+        return None
     return vote if (vote != -1 and n >= SMOOTH_FRAMES // 2 + 1) else None
 
 
@@ -104,11 +244,10 @@ app = Ursina()
 window.title = "Hand Magic"
 window.color = color.black
 
-camera.shader = Fireball3D.bloom_shader
-camera.set_shader_input("threshold", 0.90)
-camera.set_shader_input("intensity", 1.7)
-camera.set_shader_input("blur_size", 0.013)
-BG_BRIGHTNESS = 0.85       # giam sang nen de nen khong bi bloom (phai < threshold)
+# Bloom de tat mac dinh vi mot so GPU/driver lam nen camera bi den.
+# Hieu ung lua van phat sang nho additive blending; bam B neu muon bat bloom.
+_bloom_enabled = False
+BG_BRIGHTNESS = 1.0
 
 Fireball3D.init_effects()  # tao texture hieu ung (sau khi Ursina() khoi dong)
 
@@ -118,6 +257,11 @@ _fov = math.radians(camera.fov)
 _bg_h = 2 * 50 * math.tan(_fov / 2)
 background = Entity(parent=camera, model="quad",
                     scale=(_bg_h * aspect, _bg_h), z=50, double_sided=True)
+_webcam_texture = PandaTexture("webcam")
+_texture_size = (0, 0)
+# Entity cua Ursina can wrapper Texture (co thuoc tinh `_texture`), khong nhan
+# truc tiep panda3d.core.Texture.
+background.texture = UrsinaTexture(_webcam_texture, filtering="bilinear")
 
 # Mat phang xuat hien hieu ung
 SPAWN_Z = 16
@@ -130,10 +274,47 @@ def hand_to_world(hx, hy):
     return Vec3((hx - 0.5) * _spawn_w, (0.5 - hy) * _spawn_h, SPAWN_Z)
 
 
+def _update_background(frame_bgr):
+    """Cap nhat cung mot texture Panda3D, tranh tao PIL/Texture moi moi frame."""
+    global _texture_size
+    height, width = frame_bgr.shape[:2]
+    if _texture_size != (width, height):
+        _webcam_texture.setup2dTexture(
+            width,
+            height,
+            PandaTexture.T_unsigned_byte,
+            PandaTexture.F_rgba,
+        )
+        _texture_size = (width, height)
+
+    if BG_BRIGHTNESS != 1.0:
+        frame_bgr = cv2.convertScaleAbs(frame_bgr, alpha=BG_BRIGHTNESS)
+    pixels = cv2.cvtColor(
+        np.ascontiguousarray(frame_bgr[::-1]),
+        cv2.COLOR_BGR2BGRA,
+    )
+    _webcam_texture.setRamImage(pixels.tobytes())
+
+
+def _set_bloom(enabled):
+    """Bat/tat bloom an toan voi Ursina 7."""
+    global _bloom_enabled
+    if enabled:
+        camera.shader = Fireball3D.bloom_shader
+        camera.set_shader_input("threshold", 0.90)
+        camera.set_shader_input("intensity", 1.7)
+        camera.set_shader_input("blur_size", 0.013)
+    elif _bloom_enabled:
+        # Khong gan None luc khoi dong: Ursina se cleanup filter_manager chua tao.
+        camera.shader = None
+    _bloom_enabled = enabled
+
+
 # Chu bao dang khoi dong (tu an khi co khung hinh dau tien)
 loading_text = Text("Dang khoi dong camera...", origin=(0, 0), scale=1.8,
                     color=color.white, background=True)
 _started = False
+_last_frame_id = 0
 
 
 # ======================================================================
@@ -141,11 +322,11 @@ _started = False
 #    (moi module tu lo hieu ung + cooldown ben trong ham cast)
 # ======================================================================
 SKILLS = {
-    0: Fireball3D.cast,    # Chieu 1 - Xoe ban tay  -> cau lua (Hoa)
+    0: Fireball3D.cast,    # Chieu 1 - Xoe ban tay  -> luong phun lua (Hoa)
     1: earth.cast,         # Chieu 2 - Nam dam      -> khien da (Tho)
-    3: lightning.cast,     # Chieu 4 - Do ngon tro     -> set giang tu troi
+    3: lightning.cast,     # Chieu 4 - Tro hoac chu V  -> set giang tu troi
     4: air.cast,           # Chieu 5 - Do ngon cai     -> loc xoay (Khi)
-    5: ice.cast,           # Chieu 6 - Do tro + ut     -> cot bang chui len (Thuy)
+    5: ice.cast,           # Chieu 6 - The Spider-Man  -> cot bang chui len (Thuy)
     # them chieu moi: <index>: <module>.cast
 }
 
@@ -154,17 +335,25 @@ SKILLS = {
 # 5. VONG LAP CHINH
 # ======================================================================
 def update():
-    global _started
+    global _started, _last_frame_id
 
-    ok, frame = cap.read()
-    if not ok:
+    frame_id, frame = _camera_reader.latest()
+    if frame is None:
+        if _camera_reader.error and not _started:
+            loading_text.text = _camera_reader.error
+            loading_text.color = color.red
         return
+    if frame_id == _last_frame_id:
+        return
+    _last_frame_id = frame_id
     frame = cv2.flip(frame, 1)
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    # Cap nhat nen (giam sang de khong bi bloom; ML van dung rgb goc)
-    bg = (rgb.astype(np.uint16) * int(BG_BRIGHTNESS * 256) >> 8).astype(np.uint8)
-    background.texture = _to_texture(bg)
+    # Nen 540p de mo/upload nhanh; MediaPipe dung ban 512p nhe hon.
+    _update_background(frame)
+    detect_frame = cv2.resize(
+        frame, (DETECT_W, DETECT_H), interpolation=cv2.INTER_AREA,
+    )
+    rgb = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2RGB)
 
     # Co khung hinh dau tien -> an chu "dang khoi dong"
     if not _started:
@@ -173,12 +362,13 @@ def update():
 
     # Nhan dien tay
     mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-    res = detector.detect_for_video(mp_img, int((time.time() - _t0) * 1000))
+    res = detector.detect_for_video(mp_img, int((time.monotonic() - _t0) * 1000))
 
     hands = res.hand_landmarks or []
     handed = res.handedness or []
     if not hands:
         _histories.clear()
+        _lightning_streaks.clear()
         return
 
     # Xu ly TUNG TAY doc lap
@@ -198,32 +388,21 @@ def update():
     for k in list(_histories):
         if k not in seen:
             _histories[k].clear()
-
-
-def _to_texture(rgb):
-    try:
-        return Texture(Image.fromarray(rgb))
-    except Exception as e:
-        print("Texture error:", e)
-        return None
+            _lightning_streaks.pop(k, None)
 
 
 def input(key):
     if key == "escape":
         application.quit()
     elif key == "b":
-        camera.shader = None if camera.shader else Fireball3D.bloom_shader
+        _set_bloom(not _bloom_enabled)
 
 
 if __name__ == "__main__":
-    print("Xoe=lua | Dam=khien | Tro=set | Cai=loc | Tro+Ut=bang | ESC thoat.")
+    print("Xoe=phun lua | Dam=khien | Tro/V=set | Cai=loc | Spider-Man=bang | ESC thoat.")
     try:
         app.run()
     finally:
         # Thoat "cung" bang os._exit de tranh loi destructor MediaPipe (Python 3.13)
-        for fn in (cap.release, cv2.destroyAllWindows, detector.close):
-            try:
-                fn()
-            except Exception:
-                pass
+        _cleanup_resources()
         os._exit(0)

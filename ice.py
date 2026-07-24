@@ -1,13 +1,13 @@
 """
 ice.py — MODULE HIEU UNG THUY / BANG (Icebending) (file phu)
 ============================================================
-Do ngon tro + ngon ut -> mot DAY COT BANG dam tu long dat CHUI LEN quanh
-tay: cac cot bang moc voi tu day len (cao dan o giua), rung man hinh cho
-uy luc, toa suong lanh, giu mot lat roi tu tut xuong / vo tan.
+The Spider-Man (cai + tro + ut) -> mot DAY COT BANG dam tu long dat CHUI LEN quanh
+tay: cac khoi bang sac moc hon loan theo ca chieu ngang va chieu sau, rung
+man hinh cho uy luc, giu mot lat roi bi keo chim xuong.
 
 Cach dung (trong main.py):
     import ice
-    SKILLS = { 5: ice.cast, ... }     # 5 = "Do ngon tro va ngon ut"
+    SKILLS = { 5: ice.cast, ... }     # 5 = "The Spider-Man"
 """
 
 import math
@@ -16,10 +16,57 @@ import random
 import time
 
 from ursina import (
-    Entity, camera, color, destroy, time as utime, Vec3, Audio,
+    Entity, camera, color, destroy, time as utime, Vec3, Audio, Mesh,
 )
 
 _SFX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sounds")
+
+
+def _make_ice_crystal():
+    """Khoi bang than day 5 mat, chi thu nhon o 28% tren cung."""
+    sides = 5
+    bottom = []
+    shoulder = []
+    for i in range(sides):
+        angle = 2 * math.pi * i / sides
+        wobble = 1.0 if i % 2 == 0 else 0.88
+        bottom.append(Vec3(math.cos(angle) * 0.58 * wobble, 0,
+                           math.sin(angle) * 0.58 * wobble))
+        shoulder.append(Vec3(math.cos(angle) * 0.47 * wobble, 0.72,
+                             math.sin(angle) * 0.47 * wobble))
+    tip = Vec3(0.07, 1.0, -0.04)
+
+    face_colors = [
+        color.rgba32(115, 195, 235, 255),
+        color.rgba32(170, 228, 250, 255),
+        color.rgba32(92, 176, 224, 255),
+        color.rgba32(202, 244, 255, 255),
+        color.rgba32(128, 207, 242, 255),
+    ]
+    vertices = []
+    colors = []
+    for i in range(sides):
+        j = (i + 1) % sides
+        tint = face_colors[i]
+        body = [
+            bottom[i], bottom[j], shoulder[j],
+            bottom[i], shoulder[j], shoulder[i],
+        ]
+        vertices.extend(body)
+        colors.extend([tint] * len(body))
+
+        point = [shoulder[i], shoulder[j], tip]
+        vertices.extend(point)
+        colors.extend([color.rgba32(205, 248, 255, 255)] * len(point))
+
+        base = [bottom[j], bottom[i], Vec3(0, 0, 0)]
+        vertices.extend(base)
+        colors.extend([face_colors[2]] * len(base))
+
+    return Mesh(vertices=vertices, colors=colors, mode="triangle")
+
+
+_CRYSTAL_MODEL = _make_ice_crystal()
 
 
 def play_sound(name, volume=0.8):
@@ -35,31 +82,6 @@ def _ice_color():
     return color.rgb32(random.randint(150, 185),
                        random.randint(205, 228),
                        random.randint(225, 240))    # xanh bang nhat
-
-
-# ----------------------------------------------------------------------
-# SUONG LANH + MANH BANG
-# ----------------------------------------------------------------------
-class Frost(Entity):
-    """Man suong lanh: no nhe, troi len, mo dan."""
-
-    def __init__(self, position):
-        super().__init__(model="sphere", color=color.rgb32(200, 230, 245),
-                         scale=random.uniform(0.5, 1.2), position=position,
-                         unlit=True)
-        self.velocity = Vec3(random.uniform(-1.5, 1.5),
-                             random.uniform(0.5, 2.2),
-                             random.uniform(-1.5, 1.5))
-        self.life = random.uniform(0.5, 1.1)
-        self.max_life = self.life
-
-    def update(self):
-        self.position += self.velocity * utime.dt
-        self.life -= utime.dt
-        self.scale *= 1.03
-        self.alpha = 0.4 * max(0.0, self.life / self.max_life)
-        if self.life <= 0:
-            destroy(self)
 
 
 class IceShard(Entity):
@@ -91,28 +113,30 @@ class IceShard(Entity):
 # COT BANG — moc tu day len, giu, roi tut xuong + vo
 # ----------------------------------------------------------------------
 class IceSpike(Entity):
-    def __init__(self, base_pos, height, thin, delay=0.0, hold=0.9):
-        super().__init__(model="cube", color=_ice_color(), unlit=True)
+    def __init__(self, base_pos, height, thin, delay=0.0, hold=0.9,
+                 tilt_x=None, tilt_z=None):
+        super().__init__(model=_CRYSTAL_MODEL, color=color.white, unlit=True)
         self.base = Vec3(*base_pos)
         self.H = height
         self.thin = thin
         self.delay = delay
         self.hold = hold
         self.rise_dur = 0.20
-        self.rotation = Vec3(0, random.uniform(0, 360), 0)   # tinh the goc canh
+        self.sink_dur = random.uniform(0.42, 0.58)
+        self.rotation = Vec3(
+            tilt_x if tilt_x is not None else random.uniform(-12, 12),
+            random.uniform(0, 360),
+            tilt_z if tilt_z is not None else random.uniform(-12, 12),
+        )
         self.state = "wait"
         self.t = 0.0
         self._set_h(0.001)
 
     def _set_h(self, h):
-        """Giu DAY co dinh, moc len tren (chui tu dat len)."""
+        """Khoi crystal co goc tai day, than day moc len va giu chop sac."""
         h = max(0.001, h)
         self.scale = Vec3(self.thin, h, self.thin)
-        self.position = Vec3(self.base.x, self.base.y + h / 2, self.base.z)
-
-    def _shatter(self):
-        for _ in range(random.randint(2, 4)):
-            IceShard(Vec3(self.base.x, self.base.y + self.H, self.base.z))
+        self.position = Vec3(self.base.x, self.base.y, self.base.z)
 
     def update(self):
         dt = utime.dt
@@ -128,10 +152,16 @@ class IceSpike(Entity):
         elif self.state == "hold":
             if self.t >= self.hold:
                 self.state, self.t = "fall", 0.0
-                self._shatter()
         elif self.state == "fall":
-            k = min(1, self.t / 0.3)
-            self._set_h(self.H * (1 - k))                # tut xuong
+            # Giu nguyen hinh nhon va keo ca tinh the chim xuong, nhanh dan.
+            k = min(1, self.t / self.sink_dur)
+            eased = k * k
+            self.position = Vec3(
+                self.base.x,
+                self.base.y - self.H * 1.08 * eased,
+                self.base.z,
+            )
+            self.alpha = max(0.0, 1.0 - max(0.0, k - 0.68) / 0.32)
             if k >= 1:
                 destroy(self)
 
@@ -147,25 +177,54 @@ def cast_ice(center):
     # Chan dong manh cho uy luc
     camera.shake(duration=0.32, magnitude=0.8, speed=0.02)
 
-    # Nhieu hang cot bang lech chieu sau, TRAI RONG ngang, cao dan o giua
-    count = 17                            # nhieu cot -> tuong bang rong
-    spacing = 1.35                        # khoang cach ngang -> trai rong hon
-    for row, zoff in enumerate((0.0, 1.7, 3.4)):
-        for i in range(count):
-            fx = i - (count - 1) / 2
-            dist = abs(fx)
-            x = center.x + fx * spacing + random.uniform(-0.25, 0.25)
-            z = center.z + zoff + random.uniform(-0.3, 0.3)
-            H = max(2.0, 6.0 - dist * 0.35) * random.uniform(0.85, 1.15)
-            thin = random.uniform(0.45, 0.85)
-            delay = dist * 0.03 + row * 0.06     # bung lan ra 2 ben (song)
-            IceSpike(Vec3(x, ground_y, z), H, thin, delay=delay,
-                     hold=random.uniform(0.8, 1.2))
+    # Moi diem la mot CHUM chung goc: loi dung + cac mui nghieng toa 360 do.
+    # Cac chum lai trai theo x/z quanh tay de vua day dac vua co chieu sau.
+    cluster_count = 16
+    for _ in range(cluster_count):
+        radius = math.sqrt(random.random()) * 8.8
+        angle = random.uniform(0, 2 * math.pi)
+        depth = math.sin(angle) * radius * 0.62 + random.uniform(-1.4, 2.2)
+        cluster_x = center.x + math.cos(angle) * radius * 1.18
+        cluster_z = center.z + depth
+        local_ground = ground_y + random.uniform(-0.45, 0.38)
 
-    # Suong lanh bung len (trai rong theo tuong bang)
-    for _ in range(40):
-        Frost(center + Vec3(random.uniform(-11, 11), random.uniform(-3, 1),
-                            random.uniform(-1, 4)))
+        closeness = 1.0 - min(1.0, radius / 8.8)
+        core_h = random.uniform(3.6, 5.1) + closeness * random.uniform(2.6, 4.8)
+        cluster_delay = random.uniform(0.0, 0.14) + radius * random.uniform(0.006, 0.018)
+        hold = random.uniform(0.9, 1.3)
+
+        # Tinh the loi cao, gan thang dung.
+        IceSpike(
+            Vec3(cluster_x, local_ground, cluster_z),
+            core_h,
+            random.uniform(0.82, 1.22),
+            delay=cluster_delay,
+            hold=hold,
+            tilt_x=random.uniform(-8, 8),
+            tilt_z=random.uniform(-8, 8),
+        )
+
+        ray_count = random.randint(4, 7)
+        for ray in range(ray_count):
+            ray_angle = (
+                2 * math.pi * ray / ray_count
+                + random.uniform(-0.24, 0.24)
+            )
+            tilt = random.uniform(22, 43)
+            base_offset = random.uniform(0.10, 0.42)
+            IceSpike(
+                Vec3(
+                    cluster_x + math.cos(ray_angle) * base_offset,
+                    local_ground + random.uniform(-0.10, 0.12),
+                    cluster_z + math.sin(ray_angle) * base_offset,
+                ),
+                core_h * random.uniform(0.55, 0.88),
+                random.uniform(0.48, 0.92),
+                delay=cluster_delay + random.uniform(0.0, 0.035),
+                hold=hold + random.uniform(-0.08, 0.10),
+                tilt_x=math.cos(ray_angle) * tilt,
+                tilt_z=math.sin(ray_angle) * tilt,
+            )
 
 
 # ----------------------------------------------------------------------
@@ -176,7 +235,7 @@ _last_cast = {}
 
 
 def cast(lm, hand_to_world, hand_id=""):
-    """Chieu "Do ngon tro + ut": day cot bang chui len (cooldown rieng moi tay)."""
+    """The Spider-Man: day cot bang nhon chui len (cooldown rieng moi tay)."""
     if time.time() - _last_cast.get(hand_id, 0.0) < ICE_COOLDOWN:
         return
     center = hand_to_world(lm[9].x, lm[9].y)
