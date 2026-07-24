@@ -16,13 +16,38 @@ Cach dung (xem main.py):
 """
 
 import math
+import os
 import random
+import time
 
 import numpy as np
 from PIL import Image
 from ursina import (
-    Entity, color, destroy, time as utime, Vec3, Vec2, Shader, Texture,
+    Entity, camera, color, destroy, time as utime, Vec3, Vec2, Shader, Texture,
+    Audio,
 )
+
+# --- Am thanh: dat file .wav/.ogg vao thu muc sounds/ ---
+_SFX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sounds")
+
+
+def play_sound(name, volume=0.7):
+    """Phat 1 file am thanh trong sounds/. Thieu file thi bo qua (khong crash).
+
+    LUU Y: Ursina Audio tim file theo TEN trong application.asset_folder (quet
+    de quy), KHONG nhan duong dan tuyet doi -> chi truyen ten (vd "fireball.wav").
+    """
+    if not os.path.exists(os.path.join(_SFX_DIR, name)):
+        return
+    try:
+        Audio(name, autoplay=True, loop=False, volume=volume)
+    except Exception as e:
+        print("Sound error:", e)
+
+
+def load_effect_texture(path):
+    """Doc PNG (giu kenh alpha/trong suot) tu Canva thanh Ursina Texture."""
+    return Texture(Image.open(path).convert("RGBA"))
 
 # ----------------------------------------------------------------------
 # BLOOM SHADER (screen-space post-processing, gan vao camera.shader)
@@ -318,6 +343,107 @@ class Fireball(Entity):
                 Ember(self.world_position + Vec3(random.uniform(-0.6, 0.6),
                                                  random.uniform(-0.6, 0.6),
                                                  random.uniform(-0.3, 0.3)))
+
+        if self.z < 0.8:            # dap vao man hinh -> no tia lua
+            self._impact()
+            destroy(self)
+        elif self.life <= 0:        # chay het -> tat, khong no
+            destroy(self)
+
+    def _impact(self):
+        """No tung tia lua khi cau lua dap vao man hinh."""
+        p = self.world_position
+        n = int(24 * self.size)
+        for _ in range(n):
+            e = Ember(p)
+            ang = random.uniform(0, 2 * math.pi)
+            sp = random.uniform(5, 14) * self.size
+            e.velocity = Vec3(math.cos(ang) * sp, math.sin(ang) * sp,
+                              random.uniform(-4, 2))
+            e.life = random.uniform(0.3, 0.7)
+
+
+# ----------------------------------------------------------------------
+# LOGIC TUNG CHIEU — main.py chi goi cast(lm, hand_to_world)
+# ----------------------------------------------------------------------
+FIRE_COOLDOWN = 0.3      # giay giua 2 qua cau lua (tang de ban cham hon)
+_last_cast = {}          # cooldown rieng cho tung tay: {hand_id: thoi_diem}
+
+
+def cast(lm, hand_to_world, hand_id=""):
+    """Chieu "Xoe ban tay": ban cau lua ve phia man hinh (cooldown rieng moi tay).
+
+    - lm           : 21 landmarks ban tay (tu MediaPipe)
+    - hand_to_world: ham doi toa do tay -> toa do 3D (main.py truyen vao)
+    - hand_id      : khoa phan biet tay (vd "Left"/"Right") de cooldown doc lap
+    """
+    if time.time() - _last_cast.get(hand_id, 0.0) < FIRE_COOLDOWN:
+        return
+    pos = hand_to_world(lm[9].x, lm[9].y)
+    pos += Vec3(random.uniform(-0.5, 0.5), random.uniform(-0.5, 0.5), 0)
+    dx = lm[12].x - lm[0].x
+    dy = lm[0].y - lm[12].y
+    n = math.hypot(dx, dy) or 1
+    aim = Vec3(dx / n * 2.5, dy / n * 2.5, -10)
+    Fireball(pos, aim, power=random.uniform(0.5, 0.8))
+    play_sound("fireball.wav", volume=0.6)
+    _last_cast[hand_id] = time.time()
+
+
+# ----------------------------------------------------------------------
+# SPRITE EFFECT (BILLBOARD) — dung anh tu Canva, van giu do sau 3D
+# ----------------------------------------------------------------------
+class SpriteEffect(Entity):
+    """Tam anh (quad) luon quay mat ve camera, bay trong khong gian 3D.
+
+    - texture : Ursina Texture (dung load_effect_texture("file.png"))
+    - Anh tinh: de frames=1.
+    - Sprite sheet (nhieu frame trong 1 anh): dat frames, columns, fps.
+      Vi du sheet 4x4 = 16 frame -> frames=16, columns=4.
+    """
+
+    def __init__(self, position, velocity, texture, size=3.0, life=3.0,
+                 frames=1, columns=1, fps=20, spin=0.0, fade=False,
+                 grow=1.0):
+        super().__init__(model="quad", texture=texture, position=position,
+                         double_sided=True, scale=size)
+        self.velocity = velocity
+        self.life = life
+        self.max_life = life
+        self.spin = spin                       # xoay quanh truc nhin (do/giay)
+        self.fade = fade                       # True -> mo dan theo life
+        self.grow = grow                       # >1 to dan, <1 nho dan moi giay
+        self.timer = 0.0
+
+        # Sprite sheet
+        self.frames = frames
+        self.columns = max(1, columns)
+        self.rows = math.ceil(frames / self.columns)
+        self.fps = fps
+        if frames > 1:
+            self.texture_scale = Vec2(1 / self.columns, 1 / self.rows)
+
+    def update(self):
+        self.position += self.velocity * utime.dt
+        self.life -= utime.dt
+        self.timer += utime.dt
+
+        # Luon quay mat ve phia camera (billboard)
+        self.look_at(camera.world_position)
+        if self.spin:
+            self.rotation_z += self.spin * utime.dt
+        if self.grow != 1.0:
+            self.scale *= (1 + (self.grow - 1) * utime.dt)
+        if self.fade:
+            self.alpha = max(0.0, self.life / self.max_life)
+
+        # Chay animation neu la sprite sheet
+        if self.frames > 1:
+            idx = int(self.timer * self.fps) % self.frames
+            col = idx % self.columns
+            row = idx // self.columns
+            self.texture_offset = Vec2(col / self.columns,
+                                       1 - (row + 1) / self.rows)
 
         if self.z < 0.8 or self.life <= 0:
             destroy(self)

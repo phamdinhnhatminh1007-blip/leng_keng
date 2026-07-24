@@ -1,17 +1,34 @@
-# Leng Keng — Hand Magic (Nhận diện cử chỉ + Hiệu ứng phép thuật 3D)
+# Leng Keng — Hand Magic ✋🔥⚡🌪️🧊🪨
 
-Giơ cử chỉ tay trước webcam để tung "chiêu" với hiệu ứng 3D thời gian thực.
-Dùng **MediaPipe** lấy 21 điểm mốc bàn tay, **scikit-learn** phân loại cử chỉ,
-và **Ursina** (engine 3D trên Panda3D) dựng hiệu ứng (cầu lửa, khói, glow…).
+Điều khiển **phép thuật tứ đại nguyên tố** (lấy cảm hứng từ *Avatar*) bằng
+**cử chỉ tay** trước webcam, theo thời gian thực. Giơ đúng thế tay là tung
+"chiêu" tương ứng với hiệu ứng 3D — cầu lửa, sét giáng từ trời, khiên đá,
+lốc xoáy, tường băng — ngay trên hình ảnh camera của bạn.
 
-## Luồng tổng quan
+Dự án ghép 3 mảng: **thị giác máy tính** (MediaPipe lấy điểm mốc bàn tay),
+**học máy** (scikit-learn phân loại cử chỉ), và **đồ họa 3D** (Ursina/Panda3D
+dựng hiệu ứng, shader, particle, bloom). Hỗ trợ **cả hai tay** cùng lúc.
+
+## Bộ chiêu
+
+| Cử chỉ | Nguyên tố | Hiệu ứng |
+|--------|-----------|----------|
+| ✋ Xòe bàn tay | Hỏa 🔥 | Bắn cầu lửa liên tục về phía màn hình, nổ tia lửa khi va chạm |
+| ✊ Nắm đấm | Thổ 🪨 | Dựng **khiên đá** sần sùi, giữ mãi khi còn nắm đấm, sụp đổ khi thả |
+| ☝️ Ngón trỏ | Sét ⚡ | **Sét giáng từ trời** xuống đất, để lại vệt sáng dư âm |
+| 👍 Ngón cái | Khí 🌪️ | **Lốc xoáy** bao quanh tay, giữ mãi khi còn giơ, tan khi thả |
+| 🤙 Ngón trỏ + út | Thủy 🧊 | **Tường băng** đâm từ đất chui lên, rung màn hình + sương lạnh |
+
+Điều khiển khác: phím `b` bật/tắt hiệu ứng glow (bloom) · `Esc` để thoát.
+
+## Luồng hoạt động
 
 ```
-Webcam ─► MediaPipe (21 landmarks) ─► ML model (nhận diện chiêu) ─► Hiệu ứng 3D
+Webcam ─► MediaPipe (21 landmarks) ─► ML model (nhận diện chiêu) ─► Hiệu ứng 3D (Ursina)
 ```
 
-Mỗi frame: đọc webcam → lấy điểm mốc tay → model đoán ra số chiêu (0–5) →
-`main.py` gọi hiệu ứng tương ứng.
+Mỗi khung hình: đọc webcam → lấy 21 điểm mốc bàn tay → chuẩn hóa thành vector →
+model đoán ra chiêu → `main.py` gọi đúng module hiệu ứng để tung chiêu đó.
 
 ## Cài đặt
 
@@ -33,10 +50,7 @@ pip install -r requirements.txt
 python main.py          # app chính (nhận diện + hiệu ứng)
 ```
 
-Điều khiển: xòe bàn tay (Chiêu 1) để bắn cầu lửa liên tục · phím `b` bật/tắt
-glow (bloom) · `Esc` để thoát.
-
-Các file phụ trợ:
+File phụ trợ:
 
 ```bash
 python gesture_demo.py  # chỉ nhận diện + in tên chiêu (không hiệu ứng), để test model
@@ -46,151 +60,101 @@ python train_model.py   # train lại model
 
 ## Cấu trúc file
 
+Kiến trúc tách bạch: `main.py` lo phần "khung", **mỗi nguyên tố là một module
+hiệu ứng riêng**, ghép lại qua một bảng `SKILLS` duy nhất.
+
 | File | Vai trò |
 |------|---------|
-| `main.py` | **File chính.** Webcam, MediaPipe, ML nhận diện chiêu, scene Ursina, vòng lặp game. Đây là nơi *gắn* cử chỉ với hiệu ứng. |
-| `Fireball3D.py` | **Module hiệu ứng.** Shader (bloom, lửa), texture, các particle (`Ember`, `Smoke`, `TrailPuff`), class `Fireball`. Không biết gì về webcam/ML. |
+| `main.py` | **File chính.** Webcam, MediaPipe, ML nhận diện chiêu, dựng scene 3D, và **điều phối** chiêu → hiệu ứng qua bảng `SKILLS`. |
+| `Fireball3D.py` | Hiệu ứng **Hỏa** — shader lửa, khói, vệt lửa, cầu lửa. Cũng chứa `bloom_shader` dùng chung. |
+| `earth.py` | Hiệu ứng **Thổ** — khiên đá (dựng lên, giữ, sụp đổ), texture đá, bụi. |
+| `lightning.py` | Hiệu ứng **Sét** — tia sét zigzag chớp giật, vệt sáng dư âm. |
+| `air.py` | Hiệu ứng **Khí** — lốc xoáy hình phễu quanh tay, tiếng gió loop. |
+| `ice.py` | Hiệu ứng **Thủy** — tường cột băng đâm lên, sương lạnh, mảnh vỡ. |
 | `gesture_utils.py` | Dùng chung: danh sách `GESTURES` và `normalize_landmarks` (chuẩn hóa 21 điểm → vector 42 chiều). |
-| `collect_data.py` | Thu dữ liệu cử chỉ, ghi nối tiếp vào `gestures.csv`. |
+| `collect_data.py` | Thu dữ liệu cử chỉ, ghi vào `gestures.csv`. |
 | `train_model.py` | Train `MLPClassifier` từ `gestures.csv` → `gesture_model.joblib`. |
-| `gesture_demo.py` | Demo nhận diện thuần (không hiệu ứng), tiện để test độ chính xác model. |
+| `gesture_demo.py` | Demo nhận diện thuần (không hiệu ứng), tiện test độ chính xác model. |
 | `hand_landmarker.task` | Model MediaPipe phát hiện điểm mốc tay (bắt buộc). |
-| `gestures.csv` / `gesture_model.joblib` | Dữ liệu và model đã train (sinh ra). |
+| `gestures.csv` / `gesture_model.joblib` | Dữ liệu và model đã train (file sinh ra). |
+| `sounds/` | Âm thanh chiêu (`fireball.wav`, `thunder.wav`, `wind.wav`, `earth.wav`, `ice.wav`) — WAV PCM hoặc OGG. |
+
+## Bảng chiêu (`SKILLS`) trong `main.py`
+
+Toàn bộ ánh xạ cử chỉ → hiệu ứng gói gọn ở một chỗ:
+
+```python
+SKILLS = {
+    0: Fireball3D.cast,    # Xòe bàn tay  -> cầu lửa (Hỏa)
+    1: earth.cast,         # Nắm đấm       -> khiên đá (Thổ)
+    3: lightning.cast,     # Ngón trỏ      -> sét (Sét)
+    4: air.cast,           # Ngón cái      -> lốc xoáy (Khí)
+    5: ice.cast,           # Ngón trỏ + út -> tường băng (Thủy)
+    # 2: Ngón giữa         -> chưa gán
+}
+```
+
+Vòng lặp chính chỉ việc: đoán chiêu → `SKILLS.get(gesture)` → gọi. Mỗi module
+tự lo hiệu ứng, cooldown và âm thanh của riêng nó.
 
 ---
 
-# 👉 HƯỚNG DẪN THÊM HIỆU ỨNG (cho người làm phần đồ họa)
+# 👉 Hướng dẫn thêm chiêu mới
 
-Phần này dành cho bạn khi muốn gắn hiệu ứng mới cho một chiêu.
+Model đã nhận diện sẵn **6 cử chỉ** (index 0–5, xem `GESTURES` trong
+`gesture_utils.py`). Gắn hiệu ứng cho các cử chỉ này **KHÔNG cần train lại** —
+chỉ viết code.
 
-## Cần nhớ trước
+**Quy trình:**
 
-Model đã nhận diện sẵn **6 chiêu** (index 0–5, xem `GESTURES` trong
-`gesture_utils.py`). Gắn hiệu ứng cho các chiêu này **KHÔNG cần train lại** —
-chỉ viết code Python. Bạn chỉ đụng tới ML khi muốn thêm một cử chỉ *hoàn toàn mới*
-(xem mục cuối).
+1. Viết một module hiệu ứng mới (xem `lightning.py` / `ice.py` làm mẫu). Mỗi
+   hiệu ứng là một class kế thừa `Entity` có `update()` chạy mỗi frame rồi
+   `destroy(self)`. Module cần một hàm:
 
-Danh sách chiêu hiện có:
+   ```python
+   def cast(lm, hand_to_world, hand_id=""):
+       pos = hand_to_world(lm[9].x, lm[9].y)   # vị trí lòng bàn tay trong 3D
+       ...                                     # tự lo cooldown + spawn hiệu ứng
+   ```
 
-| index | Cử chỉ | Hiệu ứng hiện tại |
-|-------|--------|-------------------|
-| 0 | Xòe bàn tay | Cầu lửa ✅ |
-| 1 | Nắm đấm | *(chưa có)* |
-| 2 | Ngón giữa | *(chưa có)* |
-| 3 | Ngón trỏ (hi) | *(chưa có)* |
-| 4 | Ngón cái | *(chưa có)* |
-| 5 | Ngón trỏ + út | *(chưa có)* |
+2. Trong `main.py`: `import <module>` rồi thêm **một dòng** vào `SKILLS`:
 
-## Quy trình 3 bước
+   ```python
+   SKILLS = { ..., 2: <module>.cast }          # ví dụ gán cho ngón giữa
+   ```
 
-### Bước 1 — Viết class hiệu ứng trong `Fireball3D.py`
+Xong. Không cần đụng vào vòng lặp chính. Hai tay tự động hoạt động (cooldown
+và trạng thái đã theo `hand_id`).
 
-Mỗi hiệu ứng là một class kế thừa `Entity`, có `__init__` (dựng hình) và
-`update()` (chạy mỗi frame — di chuyển, mờ dần, rồi `destroy(self)`). Xem
-`Fireball`, `Ember`, `Smoke` làm mẫu. Có thể tái dùng `fire_shader`, `fire_tex`,
-và các particle có sẵn.
+**Mẹo hiệu ứng:**
 
-Khung tối thiểu:
-
-```python
-class MyEffect(Entity):
-    def __init__(self, position):
-        super().__init__(model="sphere", position=position, unlit=True,
-                         color=color.cyan)
-        self.life = 1.0
-
-    def update(self):
-        self.life -= utime.dt
-        self.alpha = max(0.0, self.life)     # mờ dần
-        if self.life <= 0:
-            destroy(self)                     # QUAN TRỌNG: dọn dẹp khi hết
-```
-
-### Bước 2 — Import + viết hàm `cast_...` trong `main.py`
-
-Thêm class vừa viết vào dòng import, rồi viết hàm tạo hiệu ứng từ landmark.
-Dùng `hand_to_world(lm[9].x, lm[9].y)` để lấy vị trí lòng bàn tay trong không
-gian 3D (landmark 9 = giữa lòng bàn tay; 0 = cổ tay; 12 = đầu ngón giữa).
-
-```python
-from Fireball3D import bloom_shader, init_effects, Fireball, MyEffect
-
-def cast_my_skill(lm):
-    pos = hand_to_world(lm[9].x, lm[9].y)
-    MyEffect(pos)
-```
-
-### Bước 3 — Gắn vào `update()`
-
-Trong `main.py`, tại chỗ đánh dấu `>>> GAN CHIEU MOI TAI DAY`, thêm nhánh
-`elif` cho số chiêu tương ứng. Nên cho mỗi chiêu một **cooldown riêng**.
-
-```python
-# khai báo cooldown gần _last_fire_time
-_last_skill_time = 0.0
-SKILL_COOLDOWN = 0.8
-
-# trong update(), nhớ thêm biến vào dòng `global` ở đầu hàm:
-def update():
-    global _last_fire_time, _last_skill_time
-    ...
-    if gesture == 0 and ...:
-        cast_fireball(lm); ...
-    elif gesture == 1 and (time.time() - _last_skill_time > SKILL_COOLDOWN):
-        cast_my_skill(lm)
-        _last_skill_time = time.time()
-```
-
-## Ví dụ hoàn chỉnh — Chiêu 2 "Nắm đấm" = nổ tàn lửa tỏa tròn
-
-Tái dùng luôn `Ember`, không cần viết class mới:
-
-```python
-# main.py
-from Fireball3D import bloom_shader, init_effects, Fireball, Ember
-
-_last_nova_time = 0.0
-NOVA_COOLDOWN = 0.8
-
-def cast_nova(lm):
-    pos = hand_to_world(lm[9].x, lm[9].y)
-    for i in range(24):
-        a = i / 24 * 2 * math.pi
-        e = Ember(pos)
-        e.velocity = Vec3(math.cos(a) * 8, math.sin(a) * 8, -2)  # tỏa tròn
-        e.life = 0.9
-
-# trong update(): global _last_fire_time, _last_nova_time
-    elif gesture == 1 and (time.time() - _last_nova_time > NOVA_COOLDOWN):
-        cast_nova(lm)
-        _last_nova_time = time.time()
-```
-
-## Mẹo & lưu ý
-
-- **Tọa độ:** trục z âm = bay về phía màn hình (càng gần camera càng to nhờ phối
-  cảnh). `SPAWN_Z = 16` là mặt phẳng xuất hiện; hiệu ứng bị `destroy` khi `z < 0.8`.
-- **Glow:** muốn hiệu ứng phát sáng thì cho màu thật sáng (gần trắng) — bloom chỉ
-  bắt sáng phần vượt `threshold`. Nền webcam đã bị giảm sáng (`BG_BRIGHTNESS`) nên
-  không bị glow.
-- **Texture khói/lửa:** dùng biến `fire_tex` trong `Fireball3D.py`, nhưng chỉ sau
-  khi `init_effects()` đã chạy (main.py gọi sẵn sau `Ursina()`).
-- **Luôn `destroy(self)`** khi hiệu ứng hết đời, nếu không số entity sẽ phình lên
-  và tụt FPS (góc trên phải cửa sổ có hiện `entities:`).
-
----
+- Trục **z âm** = bay về phía màn hình (càng gần camera càng to nhờ phối cảnh).
+  `SPAWN_Z = 16` là mặt phẳng hiệu ứng xuất hiện.
+- Muốn hiệu ứng **phát sáng**: cho màu thật sáng (gần trắng) — `bloom_shader`
+  chỉ bắt sáng phần vượt ngưỡng. Nền webcam đã bị giảm sáng nên không bị glow.
+- Muốn **chấn động màn hình** (cảm giác lực): gọi `camera.shake(duration, magnitude)`.
+- **Luôn `destroy(self)`** khi hiệu ứng hết đời, kẻo entity phình lên gây tụt FPS.
 
 ## Khi nào PHẢI train lại model
 
-Chỉ khi **thêm một cử chỉ mới chưa có** trong `GESTURES`, hoặc model nhận nhầm
-một chiêu và bạn muốn thu thêm mẫu:
+Chỉ khi **thêm một cử chỉ hoàn toàn mới** (chưa có trong `GESTURES`), hoặc model
+hay nhận nhầm và bạn muốn thu thêm mẫu:
 
 1. Sửa danh sách `GESTURES` trong `gesture_utils.py` (tối đa 10 chiêu, ứng phím 0–9).
 2. `python collect_data.py` — giơ cử chỉ, **giữ phím số** tương ứng để ghi mẫu
-   (~200–300 mẫu/chiêu, đổi góc/khoảng cách/tay trái–phải). Data ghi nối tiếp vào
-   `gestures.csv`.
+   (~200–300 mẫu/chiêu, đổi góc/khoảng cách/tay trái–phải).
 3. `python train_model.py` — train lại, xuất `gesture_model.joblib`.
 4. Chạy lại `main.py`.
+
+> Lưu ý: cùng một model dùng được cho **cả hai tay** — code thử cả bản gốc và
+> bản lật gương của bàn tay, nên không cần train riêng tay trái/phải.
+
+## Âm thanh
+
+Mỗi chiêu tự phát âm thanh nếu có file tương ứng trong `sounds/`
+(`fireball.wav`, `thunder.wav`, `earth.wav`, `wind.wav`, `ice.wav`). Thiếu file
+thì bỏ qua, không lỗi. **Phải là WAV PCM hoặc OGG thật** — đổi đuôi file MP3
+thành `.wav` sẽ không phát được (Panda3D báo "not a valid RIFF file").
 
 ## Tham số tinh chỉnh nhanh
 
@@ -198,12 +162,16 @@ một chiêu và bạn muốn thu thêm mẫu:
 |---------|------|---------|
 | `CONF_THRESHOLD` (0.8) | `main.py` | Dưới ngưỡng này coi như không rõ chiêu. |
 | `SMOOTH_FRAMES` (7) | `main.py` | Số frame để bình chọn (làm mượt, chống nhấp nháy). |
-| `FIRE_COOLDOWN` (0.15) | `main.py` | Nhịp bắn cầu lửa. |
+| `BG_BRIGHTNESS` (0.85) | `main.py` | Độ sáng webcam (phải < ngưỡng bloom để nền không bị glow). |
+| `FIRE_COOLDOWN` | `Fireball3D.py` | Nhịp bắn cầu lửa. |
+| `timeout` | `earth.py` / `air.py` | Bỏ tay bao lâu thì khiên/lốc tan (chiêu duy trì). |
+| `count` / `spacing` | `ice.py` | Số cột băng và độ rộng tường băng. |
 | `threshold / intensity / blur_size` | `main.py` | Thông số bloom (glow). |
-| `BG_BRIGHTNESS` (0.85) | `main.py` | Độ sáng webcam (phải < `threshold` để nền không bị glow). |
 
-## Ghi chú repo
+## Ghi chú kỹ thuật
 
-- `gestures.csv` và `gesture_model.joblib` là file sinh ra. Muốn repo gọn có thể
-  không commit `.joblib` (người khác clone về tự `train_model.py`).
+- Webcam mở bằng backend **DirectShow** (`cv2.CAP_DSHOW`) cho nhanh trên Windows.
+- Thoát bằng `os._exit(0)` để tránh lỗi destructor của MediaPipe trên Python 3.13.
+- `gestures.csv` và `gesture_model.joblib` là file sinh ra; có thể không commit
+  `.joblib` (người khác clone về tự `train_model.py`).
 - `.vscode/` chứa đường dẫn `.venv` theo máy cá nhân — cân nhắc thêm vào `.gitignore`.
